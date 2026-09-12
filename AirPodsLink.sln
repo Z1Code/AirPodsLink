@@ -1,0 +1,31 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirPodsLink.Core", "src\AirPodsLink.Core\AirPodsLink.Core.csproj", "{86F72199-1FCB-4613-9569-017EF6F0208D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirPodsLink.App", "src\AirPodsLink.App\AirPodsLink.App.csproj", "{60288F30-F4E7-4AC3-A98D-693235AD9C5A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirPodsLink.Core.Tests", "tests\AirPodsLink.Core.Tests\AirPodsLink.Core.Tests.csproj", "{C898D68E-E557-44BD-8269-2E36325E58AA}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{86F72199-1FCB-4613-9569-017EF6F0208D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{86F72199-1FCB-4613-9569-017EF6F0208D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{86F72199-1FCB-4613-9569-017EF6F0208D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{86F72199-1FCB-4613-9569-017EF6F0208D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{60288F30-F4E7-4AC3-A98D-693235AD9C5A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{60288F30-F4E7-4AC3-A98D-693235AD9C5A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{60288F30-F4E7-4AC3-A98D-693235AD9C5A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{60288F30-F4E7-4AC3-A98D-693235AD9C5A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C898D68E-E557-44BD-8269-2E36325E58AA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C898D68E-E557-44BD-8269-2E36325E58AA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C898D68E-E557-44BD-8269-2E36325E58AA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C898D68E-E557-44BD-8269-2E36325E58AA}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
