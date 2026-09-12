@@ -13,7 +13,13 @@ internal sealed class NormalConnectionAccelerator : IDisposable
 
     public NormalConnectionAccelerator(LocalEventLog log) => _log = log;
 
-    public async Task<ConnectionAttemptResult?> TryConnectAsync(bool force = false, CancellationToken cancellationToken = default)
+    /// <summary>Whether Windows still exposes an active AirPods stereo endpoint.</summary>
+    public bool IsStereoEndpointActive() => _audio.IsStereoEndpointActive();
+
+    public async Task<ConnectionAttemptResult?> TryConnectAsync(
+        bool force = false,
+        DateTimeOffset? advertisementObservedAt = null,
+        CancellationToken cancellationToken = default)
     {
         if ((!force && DateTimeOffset.UtcNow - _lastAttempt < TimeSpan.FromSeconds(6)) ||
             !await _gate.WaitAsync(0, cancellationToken))
@@ -27,16 +33,20 @@ internal sealed class NormalConnectionAccelerator : IDisposable
             _lastAttempt = DateTimeOffset.UtcNow;
             var ks = _ks.TryReconnectAirPods();
             var ksElapsed = timer.Elapsed;
-            var defaultEndpointError = ks.RequestSent
-                ? DefaultAudioEndpointService.TrySetForMedia(ks.EndpointId)
-                : null;
+
+            // The KS path does not open a Bluetooth handle, so the classic link
+            // state is genuinely unknown here rather than disconnected.
             var bluetooth = ks.RequestSent
-                ? (Found: true, Connected: false, DeviceName: ks.EndpointName, Error: (string?)null)
-                : await _bluetooth.TryWarmUpPairedAirPodsAsync(force, cancellationToken);
+                ? (Found: true, Connected: (bool?)null, DeviceName: ks.EndpointName, Error: (string?)null)
+                : await WarmUpAsync(force, cancellationToken);
+
+            var audioPhaseStarted = timer.Elapsed;
             var audio = await _audio.TryActivateStereoEndpointAsync(
                 bluetooth.DeviceName ?? ks.EndpointName,
-                bluetooth.Connected || ks.RequestSent,
+                ks.EndpointId,
+                bluetooth.Connected == true || ks.RequestSent,
                 cancellationToken);
+
             var result = new ConnectionAttemptResult(
                 ks.EndpointFound,
                 ks.RequestSent,
@@ -48,7 +58,18 @@ internal sealed class NormalConnectionAccelerator : IDisposable
                 audio.Name,
                 timer.Elapsed,
                 ksElapsed,
-                audio.Error ?? defaultEndpointError ?? (!ks.RequestSent ? ks.Error ?? bluetooth.Error : null));
+                audio.Error ?? audio.DefaultEndpointError ?? (!ks.RequestSent ? ks.Error ?? bluetooth.Error : null))
+            {
+                BleToAttempt = advertisementObservedAt is null
+                    ? null
+                    : _lastAttempt - advertisementObservedAt.Value,
+                DefaultEndpointElapsed = audio.DefaultEndpointElapsed,
+                EndpointActiveElapsed = audioPhaseStarted + audio.UntilActive,
+                FirstAudioElapsed = audio.UntilFirstBuffer == TimeSpan.Zero ? null : audioPhaseStarted + audio.UntilFirstBuffer,
+                StreamHold = audio.Hold == TimeSpan.Zero ? null : audio.Hold,
+                KsEndpointId = ks.EndpointId,
+                AudioEndpointId = audio.Id
+            };
             await _log.WriteAsync("normal-connection-attempt", result);
             return result;
         }
@@ -56,6 +77,13 @@ internal sealed class NormalConnectionAccelerator : IDisposable
         {
             _gate.Release();
         }
+    }
+
+    private async Task<(bool Found, bool? Connected, string? DeviceName, string? Error)> WarmUpAsync(
+        bool force, CancellationToken cancellationToken)
+    {
+        var warm = await _bluetooth.TryWarmUpPairedAirPodsAsync(force, cancellationToken);
+        return (warm.Found, warm.Connected, warm.DeviceName, warm.Error);
     }
 
     public void Dispose()

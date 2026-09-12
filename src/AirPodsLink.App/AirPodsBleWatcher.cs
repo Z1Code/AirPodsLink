@@ -7,12 +7,18 @@ namespace AirPodsLink.App;
 internal sealed class AirPodsBleWatcher : IDisposable
 {
     private readonly BluetoothLEAdvertisementWatcher _watcher;
+    private readonly NearbyAirPodsTracker _tracker = new();
+    private readonly CancellationTokenSource _lifetime = new();
     private bool _disposed;
+    private int _restartPending;
     private DateTimeOffset _lastRawDiagnostic = DateTimeOffset.MinValue;
 
     public event EventHandler<AirPodsSeenEventArgs>? AirPodsSeen;
     public event EventHandler? AppleProximityObserved;
     public event EventHandler<string>? Diagnostic;
+
+    /// <summary>How long a reading stays valid after the last accepted packet.</summary>
+    public TimeSpan StaleAfter => _tracker.StaleAfter;
 
     public AirPodsBleWatcher()
     {
@@ -51,15 +57,26 @@ internal sealed class AirPodsBleWatcher : IDisposable
         {
             var bytes = section.Data.ToArray();
             var offset = bytes.Length >= 3 && bytes[0] == 0x4C && bytes[1] == 0x00 ? 2 : 0;
-            if (bytes.Length > offset && bytes[offset] == AppleProximityParser.ProximityPairingType)
+            if (bytes.Length <= offset || bytes[offset] != AppleProximityParser.ProximityPairingType)
             {
-                AppleProximityObserved?.Invoke(this, EventArgs.Empty);
-                if (DateTimeOffset.UtcNow - _lastRawDiagnostic > TimeSpan.FromSeconds(5))
-                {
-                    _lastRawDiagnostic = DateTimeOffset.UtcNow;
-                    Diagnostic?.Invoke(this, $"Apple proximity packet: {bytes.Length} bytes, RSSI {args.RawSignalStrengthInDBm} dBm.");
-                }
+                continue;
             }
+
+            var now = DateTimeOffset.UtcNow;
+            // Strangers walking by broadcast the same packet. Acting on theirs
+            // would show their battery and fire connection attempts.
+            if (!_tracker.TryAccept(args.BluetoothAddress, args.RawSignalStrengthInDBm, now))
+            {
+                continue;
+            }
+
+            AppleProximityObserved?.Invoke(this, EventArgs.Empty);
+            if (now - _lastRawDiagnostic > TimeSpan.FromSeconds(5))
+            {
+                _lastRawDiagnostic = now;
+                Diagnostic?.Invoke(this, $"Apple proximity packet: {bytes.Length} bytes, RSSI {args.RawSignalStrengthInDBm} dBm.");
+            }
+
             if (AppleProximityParser.TryParse(bytes, out var advertisement) && advertisement is not null)
             {
                 AirPodsSeen?.Invoke(this, new AirPodsSeenEventArgs(args.BluetoothAddress, args.RawSignalStrengthInDBm, advertisement));
@@ -67,16 +84,45 @@ internal sealed class AirPodsBleWatcher : IDisposable
         }
     }
 
-    private void OnStopped(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementWatcherStoppedEventArgs args) =>
-        Diagnostic?.Invoke(this, $"BLE scanner stopped: {args.Error}.");
+    private async void OnStopped(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementWatcherStoppedEventArgs args)
+    {
+        Diagnostic?.Invoke(this, $"BLE scanner stopped: {args.Error}; waiting for Bluetooth to return.");
+        if (_disposed || Interlocked.Exchange(ref _restartPending, 1) != 0) return;
+        try
+        {
+            while (!_lifetime.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), _lifetime.Token);
+                try
+                {
+                    Start();
+                    if (_watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started) return;
+                }
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    Diagnostic?.Invoke(this, $"BLE todavía no está disponible: {error.Message}");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal application shutdown.
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _restartPending, 0);
+        }
+    }
 
     public void Dispose()
     {
         if (_disposed) return;
-        Stop();
+        _disposed = true;
+        _lifetime.Cancel();
+        if (_watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started) _watcher.Stop();
         _watcher.Received -= OnReceived;
         _watcher.Stopped -= OnStopped;
-        _disposed = true;
+        _lifetime.Dispose();
     }
 }
 

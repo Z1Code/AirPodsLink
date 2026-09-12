@@ -10,11 +10,21 @@ una conexión inmediata sin instalar controladores.
 - Detecta anuncios Apple Proximity BLE (`0x004C`, tipo `0x07`).
 - Reconoce modelos conocidos de AirPods.
 - Muestra batería aproximada de ambos auriculares y del estuche.
+- Dibuja en la barra de tareas el porcentaje del auricular más bajo, con color
+  según el nivel y un punto cuando están cargando. Muestra `--` en gris si no se
+  reciben anuncios durante 30 segundos.
+- Reduce lecturas de AirPods ajenos usando proximidad y continuidad de señal.
+  RSSI es una heurística: los anuncios rotatorios de Apple no exponen una
+  identidad estable que permita garantizar la propiedad del dispositivo.
 - Detecta cambios de oído, estuche y tapa cuando el modelo los anuncia.
 - Solicita una reconexión A2DP al controlador Bluetooth de Windows mediante
   `KSPROPERTY_ONESHOT_RECONNECT`.
-- Selecciona los AirPods como salida multimedia y abre brevemente el endpoint con
-  WASAPI compartido para reducir la demora de activación.
+- Después de activar A2DP, selecciona el ID exacto del endpoint que WASAPI abrió
+  como salida predeterminada. Basta con eso para FXSound: adopta el dispositivo
+  predeterminado como su salida física y luego se restituye él como
+  predeterminado, sin necesidad de controlarlo desde fuera.
+- Abre brevemente el endpoint con WASAPI compartido para reducir la demora de
+  activación.
 - Incluye **Conectar ahora**, un interruptor de aceleración y un registro local.
 
 La batería BLE normalmente se publica en pasos de 10 %. El estuche suele anunciarse

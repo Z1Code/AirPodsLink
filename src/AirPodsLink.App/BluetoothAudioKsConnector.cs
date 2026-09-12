@@ -1,3 +1,4 @@
+using AirPodsLink.Core;
 using System.Runtime.InteropServices;
 
 namespace AirPodsLink.App;
@@ -8,8 +9,6 @@ namespace AirPodsLink.App;
 /// </summary>
 internal sealed class BluetoothAudioKsConnector
 {
-    private const uint DeviceStateActive = 0x1;
-    private const uint DeviceStateUnplugged = 0x8;
     private const uint StgmRead = 0;
     private const uint KsPropertyTypeGet = 0x1;
     private const uint KsPropertyTypeBasicSupport = 0x00000200;
@@ -27,20 +26,47 @@ internal sealed class BluetoothAudioKsConnector
         {
             enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
             Marshal.ThrowExceptionForHR(enumerator.EnumAudioEndpoints(
-                EDataFlow.Render, DeviceStateActive | DeviceStateUnplugged, out collection));
+                EDataFlow.Render, AirPodsAudioEndpoints.UsableStates, out collection));
             Marshal.ThrowExceptionForHR(collection.GetCount(out var count));
+
+            // Rank every candidate before touching any of them. Picking the
+            // first name match would happily send the reconnect order to a
+            // leftover endpoint from an earlier pairing.
+            var candidates = new List<(string Name, string Id, int Rank)>();
+            for (uint i = 0; i < count; i++)
+            {
+                IMMDevice? scan = null;
+                try
+                {
+                    Marshal.ThrowExceptionForHR(collection.Item(i, out scan));
+                    var scanName = SafeGetFriendlyName(scan);
+                    if (!AirPodsAudioEndpoints.IsStereoName(scanName)) continue;
+                    Marshal.ThrowExceptionForHR(scan.GetId(out var scanId));
+                    Marshal.ThrowExceptionForHR(scan.GetState(out var scanState));
+                    var rank = AirPodsAudioEndpoints.Rank(scanState);
+                    if (rank > 0) candidates.Add((scanName!, scanId, rank));
+                }
+                catch
+                {
+                    // Ghost endpoints throw 0xE000020B while being read; skip them.
+                }
+                finally
+                {
+                    Release(scan);
+                }
+            }
 
             string? candidateName = null;
             string? candidateId = null;
-            for (uint i = 0; i < count; i++)
+            Exception? lastCandidateError = null;
+            foreach (var candidate in candidates.OrderByDescending(item => item.Rank))
             {
                 IMMDevice? endpoint = null;
                 try
                 {
-                    Marshal.ThrowExceptionForHR(collection.Item(i, out endpoint));
-                    var name = GetFriendlyName(endpoint);
-                    if (!IsAirPodsStereoName(name)) continue;
-                    Marshal.ThrowExceptionForHR(endpoint.GetId(out var id));
+                    var name = candidate.Name;
+                    var id = candidate.Id;
+                    Marshal.ThrowExceptionForHR(enumerator.GetDevice(id, out endpoint));
                     candidateName ??= name;
                     candidateId ??= id;
 
@@ -63,9 +89,9 @@ internal sealed class BluetoothAudioKsConnector
                 }
                 catch (Exception error)
                 {
-                    candidateName ??= SafeGetFriendlyName(endpoint);
-                    if (candidateId is not null)
-                        return new(true, false, candidateName, candidateId, error.HResult, error.Message);
+                    // A candidate can disappear during the A2DP state
+                    // transition. Keep trying the remaining ranked candidates.
+                    lastCandidateError = error;
                 }
                 finally
                 {
@@ -75,7 +101,8 @@ internal sealed class BluetoothAudioKsConnector
 
             return candidateId is null
                 ? new(false, false, null, null, null, "Windows no expuso un endpoint A2DP AirPods activo o desconectado.")
-                : new(true, false, candidateName, candidateId, null, "El endpoint no expuso KSPROPSETID_BtAudio.");
+                : new(true, false, candidateName, candidateId, lastCandidateError?.HResult,
+                    lastCandidateError?.Message ?? "El endpoint no expuso KSPROPSETID_BtAudio.");
         }
         catch (Exception error)
         {
@@ -185,17 +212,6 @@ internal sealed class BluetoothAudioKsConnector
     {
         try { return device is null ? null : GetFriendlyName(device); }
         catch { return null; }
-    }
-
-    private static bool IsAirPodsStereoName(string name)
-    {
-        var apple = name.Contains("AirPods", StringComparison.OrdinalIgnoreCase) ||
-                    name.Contains("Powerbeats", StringComparison.OrdinalIgnoreCase);
-        var handsFree = name.Contains("Hands-Free", StringComparison.OrdinalIgnoreCase) ||
-                        name.Contains("Hands Free", StringComparison.OrdinalIgnoreCase) ||
-                        name.Contains("Headset", StringComparison.OrdinalIgnoreCase) ||
-                        name.Contains("micrófono", StringComparison.OrdinalIgnoreCase);
-        return apple && !handsFree;
     }
 
     private static void Release(object? value)

@@ -53,6 +53,26 @@ public sealed class AppleProximityParserTests
     }
 
     [Fact]
+    public void ReportsTheLowestEarbudChargeIgnoringTheCase()
+    {
+        byte[] data = [0x07, 0x19, 0x01, 0x14, 0x20, 0x20, 0xA7, 0x01, 0x00, 0x00, 0x00];
+
+        Assert.True(AppleProximityParser.TryParse(data, out var result));
+        Assert.Equal(10, result!.CaseBattery);
+        Assert.Equal(70, result.LowestPodBattery);
+    }
+
+    [Fact]
+    public void FallsBackToTheOnlyKnownEarbudCharge()
+    {
+        byte[] data = [0x07, 0x19, 0x01, 0x14, 0x20, 0x20, 0xAF, 0x00, 0x00, 0x00, 0x00];
+
+        Assert.True(AppleProximityParser.TryParse(data, out var result));
+        Assert.Null(result!.RightBattery);
+        Assert.Equal(100, result.LowestPodBattery);
+    }
+
+    [Fact]
     public void RejectsInvalidPackets()
     {
         byte[][] invalidPackets = [[], [0x06, 0x19, 0x01, 0x14], [0x07, 0x19, 0x01, 0x14]];
