@@ -1,5 +1,13 @@
 # AirPodsLink
 
+<p align="center">
+  <img src="social/airpodslink-twitter-launch.png" alt="AirPodsLink — AirPods en Windows, conexión más rápida" width="880">
+</p>
+
+**Conecta tus AirPods más rápido en Windows.** Detecta los anuncios Bluetooth LE,
+acelera el perfil de audio estéreo (A2DP) y muestra la batería en la barra de tareas.
+Sin controladores, sin reemplazar el stack Bluetooth de Windows.
+
 AirPodsLink es una aplicación local para Windows que detecta anuncios Bluetooth LE
 de AirPods y acelera la conexión del perfil de audio estéreo (A2DP). Vive en la
 bandeja del sistema, muestra el estado y la batería aproximada, y permite solicitar
