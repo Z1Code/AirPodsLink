@@ -10,6 +10,7 @@ internal sealed class AirPodsBleWatcher : IDisposable
     private readonly NearbyAirPodsTracker _tracker = new();
     private readonly CancellationTokenSource _lifetime = new();
     private bool _disposed;
+    private bool _started;
     private int _restartPending;
     private DateTimeOffset _lastRawDiagnostic = DateTimeOffset.MinValue;
 
@@ -36,10 +37,20 @@ internal sealed class AirPodsBleWatcher : IDisposable
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_started && _watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started) return;
         if (_watcher.Status is BluetoothLEAdvertisementWatcherStatus.Created or BluetoothLEAdvertisementWatcherStatus.Stopped or BluetoothLEAdvertisementWatcherStatus.Aborted)
         {
-            _watcher.Start();
-            Diagnostic?.Invoke(this, $"BLE scanner started ({_watcher.ScanningMode}).");
+            try
+            {
+                _watcher.Start();
+                _started = true;
+                Diagnostic?.Invoke(this, $"BLE scanner started ({_watcher.ScanningMode}).");
+            }
+            catch (Exception error)
+            {
+                Diagnostic?.Invoke(this, $"No se pudo iniciar BLE: {FormatError(error)}");
+                throw;
+            }
         }
     }
 
@@ -100,7 +111,7 @@ internal sealed class AirPodsBleWatcher : IDisposable
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
                 {
-                    Diagnostic?.Invoke(this, $"BLE todavía no está disponible: {error.Message}");
+                    Diagnostic?.Invoke(this, $"BLE todavía no está disponible: {FormatError(error)}");
                 }
             }
         }
@@ -113,6 +124,9 @@ internal sealed class AirPodsBleWatcher : IDisposable
             Interlocked.Exchange(ref _restartPending, 0);
         }
     }
+
+    private static string FormatError(Exception error) =>
+        $"{error.GetType().Name} (HRESULT 0x{error.HResult:X8}): {error.Message}";
 
     public void Dispose()
     {

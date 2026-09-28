@@ -8,9 +8,8 @@ namespace AirPodsLink.Core;
 /// </summary>
 /// <remarks>
 /// AirPods rotate their BLE address periodically, so the tracker cannot match
-/// the paired address. It locks onto the first close-enough device and keeps it
-/// until the advertisements stop for <see cref="StaleAfter"/>, which also covers
-/// the rotation: the old address goes quiet and the new one takes the lock.
+/// the paired address. It follows nearby advertisers, allows a short quiet gap
+/// for address rotation and lets a stronger signal take over.
 /// </remarks>
 public sealed class NearbyAirPodsTracker
 {
@@ -22,6 +21,7 @@ public sealed class NearbyAirPodsTracker
     private short _rssi;
     private DateTimeOffset _lastAccepted = DateTimeOffset.MinValue;
     private bool _locked;
+    private readonly Dictionary<ulong, DateTimeOffset> _recentCandidates = new();
 
     /// <param name="minimumRssi">
     /// Entry gate only; the lock below is what keeps strangers out. Measured
@@ -45,18 +45,45 @@ public sealed class NearbyAirPodsTracker
             return false;
         }
 
-        if (_locked && bluetoothAddress != _address &&
-            now - _lastAccepted < AddressHandoverAfter &&
-            rssi < _rssi + SwitchMarginDb)
+        // Keep a short rolling view of advertisements. A fixed lock can get
+        // captured by another person's AirPods and suppress the user's device
+        // for the full stale timeout. RSSI is only a proximity heuristic, so
+        // allow a meaningfully stronger nearby advertiser to take over.
+        foreach (var address in _recentCandidates.Where(pair => now - pair.Value >= AddressHandoverAfter)
+                     .Select(pair => pair.Key).ToArray())
         {
-            return false;
+            _recentCandidates.Remove(address);
         }
 
-        _locked = true;
-        _address = bluetoothAddress;
-        _rssi = rssi;
-        _lastAccepted = now;
-        return true;
+        _recentCandidates[bluetoothAddress] = now;
+        var lockedRecent = _recentCandidates.TryGetValue(_address, out var lockedLastSeen) &&
+                           now - lockedLastSeen < AddressHandoverAfter;
+        if (!_locked || now - _lastAccepted >= StaleAfter ||
+            (!lockedRecent && now - _lastAccepted >= AddressHandoverAfter))
+        {
+            _locked = true;
+            _address = bluetoothAddress;
+            _rssi = rssi;
+            _lastAccepted = now;
+            return true;
+        }
+
+        if (bluetoothAddress == _address)
+        {
+            _rssi = rssi;
+            _lastAccepted = now;
+            return true;
+        }
+
+        if (rssi >= _rssi + SwitchMarginDb)
+        {
+            _address = bluetoothAddress;
+            _rssi = rssi;
+            _lastAccepted = now;
+            return true;
+        }
+
+        return false;
     }
 
     public bool IsStale(DateTimeOffset now) => !_locked || now - _lastAccepted >= StaleAfter;

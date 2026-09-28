@@ -10,8 +10,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _accelerationMenuItem;
     private readonly BatteryTrayIcon _batteryIcon;
     private readonly System.Windows.Forms.Timer _staleTimer = new() { Interval = 5000 };
+    private readonly AirPodsEndpointMonitor _endpointMonitor = new();
+    private string? _lastRoutedEndpointId;
+    private DateTimeOffset _lastRouted = DateTimeOffset.MinValue;
     private DateTimeOffset _lastNotification = DateTimeOffset.MinValue;
-    private DateTimeOffset _lastSeen = DateTimeOffset.MinValue;
+    private long _lastSeenTicks = DateTimeOffset.MinValue.UtcTicks;
     private DateTimeOffset _lastEndpointCheck = DateTimeOffset.MinValue;
     private byte? _lastLidCounter;
     private volatile bool _audioReady;
@@ -35,6 +38,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _accelerationMenuItem.CheckedChanged += (_, _) =>
             _accelerationEnabled = _accelerationMenuItem.Checked;
         menu.Items.Add(_accelerationMenuItem);
+
+        var startupMenuItem = new ToolStripMenuItem("Iniciar con Windows")
+        {
+            Checked = StartupRegistration.IsEnabled(),
+            CheckOnClick = true
+        };
+        menu.Items.Add(startupMenuItem);
         menu.Items.Add("Abrir registro", null, (_, _) => OpenLog());
         menu.Items.Add("Abrir configuración Bluetooth", null, (_, _) => OpenBluetoothSettings());
         menu.Items.Add(new ToolStripSeparator());
@@ -48,6 +58,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ContextMenuStrip = menu
         };
         _trayIcon.DoubleClick += (_, _) => ShowStatus();
+        // Attached once the tray icon exists, since the handler reports through it.
+        startupMenuItem.CheckedChanged += (_, _) =>
+        {
+            var error = StartupRegistration.Set(startupMenuItem.Checked);
+            if (error is not null)
+            {
+                _trayIcon.ShowBalloonTip(4000, "AirPodsLink", error, ToolTipIcon.Warning);
+            }
+        };
         _batteryIcon = new BatteryTrayIcon(_trayIcon);
         _batteryIcon.Update(null, false, stale: true);
         _staleTimer.Tick += (_, _) => DropStaleReading();
@@ -55,7 +74,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _watcher.AirPodsSeen += OnAirPodsSeen;
         _watcher.AppleProximityObserved += OnAppleProximityObserved;
         _watcher.Diagnostic += OnWatcherDiagnostic;
+        _endpointMonitor.StereoEndpointActivated += OnStereoEndpointActivated;
+        _endpointMonitor.Diagnostic += OnWatcherDiagnostic;
+        _endpointMonitor.Start();
         _ = _log.WriteAsync("application-started", new { version = Application.ProductVersion });
+
+        // Windows may have connected the AirPods before this process existed,
+        // in which case no state change will ever arrive.
+        var alreadyActive = _endpointMonitor.FindActiveStereoEndpointId();
+        if (alreadyActive is not null) OnStereoEndpointActivated(this, alreadyActive);
 
         try
         {
@@ -75,7 +102,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // firmware (both report set at once), so connection state is never
         // inferred from them. Windows' own endpoint state decides.
         var connected = _audioReady;
-        _lastSeen = DateTimeOffset.UtcNow;
+        Interlocked.Exchange(ref _lastSeenTicks, DateTimeOffset.UtcNow.UtcTicks);
 
         // Bluetooth callbacks arrive on a WinRT pool thread, and neither the
         // form nor NotifyIcon may be touched from there.
@@ -140,17 +167,57 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _lastEndpointCheck = now;
         _audioReady = _accelerator.IsStereoEndpointActive();
+        if (!_audioReady)
+        {
+            // Forget the routing so a quick reconnection is routed again
+            // instead of being swallowed by the duplicate-notification guard.
+            _lastRoutedEndpointId = null;
+        }
         return _audioReady;
+    }
+
+    /// <summary>
+    /// Hands the AirPods to Windows as the default output as soon as they are
+    /// playable. This is what lets FxSound adopt them: it follows the default
+    /// device and then restores itself as the default.
+    /// </summary>
+    private async void OnStereoEndpointActivated(object? sender, string endpointId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (_lastRoutedEndpointId == endpointId && now - _lastRouted < TimeSpan.FromSeconds(10))
+        {
+            // Several notifications describe one arrival; route it once.
+            return;
+        }
+
+        _lastRoutedEndpointId = endpointId;
+        _lastRouted = now;
+        _audioReady = true;
+
+        try
+        {
+            var error = await _accelerator.RouteToStereoEndpointAsync(endpointId);
+            RunOnUi(() => _trayIcon.Text = error is null
+                ? "AirPodsLink · AirPods como salida predeterminada"
+                : "AirPodsLink · AirPods conectados; no se pudo cambiar la salida");
+        }
+        catch (Exception error)
+        {
+            // Raised on a thread pool thread: an escape would end the process.
+            _ = _log.WriteAsync("stereo-endpoint-routing-failed", new { endpointId, message = error.Message });
+        }
     }
 
     private void DropStaleReading()
     {
-        if (_lastSeen == DateTimeOffset.MinValue || DateTimeOffset.UtcNow - _lastSeen < _watcher.StaleAfter)
+        var lastSeenTicks = Interlocked.Read(ref _lastSeenTicks);
+        if (lastSeenTicks == DateTimeOffset.MinValue.UtcTicks ||
+            DateTimeOffset.UtcNow - new DateTimeOffset(lastSeenTicks, TimeSpan.Zero) < _watcher.StaleAfter)
         {
             return;
         }
 
-        _lastSeen = DateTimeOffset.MinValue;
+        Interlocked.Exchange(ref _lastSeenTicks, DateTimeOffset.MinValue.UtcTicks);
         _batteryIcon.Update(null, false, stale: true);
         _trayIcon.Text = "AirPodsLink · buscando AirPods";
     }
@@ -203,7 +270,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var result = await _accelerator.TryConnectAsync(force: true);
         if (result is null) return;
-        _statusForm.UpdateConnectionAttempt(result);
+        RunOnUi(() => _statusForm.UpdateConnectionAttempt(result));
         _audioReady = result.AudioReady;
         _trayIcon.ShowBalloonTip(3000, "AirPodsLink", result.Summary, result.BluetoothLinkReady ? ToolTipIcon.Info : ToolTipIcon.Warning);
         ShowStatus();
@@ -221,6 +288,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _staleTimer.Stop();
         _staleTimer.Dispose();
+        _endpointMonitor.StereoEndpointActivated -= OnStereoEndpointActivated;
+        _endpointMonitor.Diagnostic -= OnWatcherDiagnostic;
+        _endpointMonitor.Dispose();
         _watcher.AirPodsSeen -= OnAirPodsSeen;
         _watcher.AppleProximityObserved -= OnAppleProximityObserved;
         _watcher.Diagnostic -= OnWatcherDiagnostic;

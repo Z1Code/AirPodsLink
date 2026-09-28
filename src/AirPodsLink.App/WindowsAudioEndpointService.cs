@@ -89,9 +89,13 @@ internal sealed class WindowsAudioEndpointService
                     var stale = FindBestEndpoint(enumerator, preferredDeviceName, preferredEndpointId, activeOnly: false);
                     var staleName = stale?.FriendlyName;
                     var staleId = stale?.ID;
+                    var staleState = stale?.State.ToString();
                     stale?.Dispose();
                     return new(stale is not null, false, staleName, staleId,
-                        "El endpoint A2DP todavía no está activo en Windows.", untilActive, TimeSpan.Zero,
+                        stale is null
+                            ? "El endpoint A2DP desapareció durante la conexión. Vuelve a emparejar los AirPods desde Configuración > Bluetooth y dispositivos."
+                            : $"El endpoint A2DP sigue en estado {staleState}; Windows no terminó de conectar el perfil estéreo. Revisa Bluetooth y dispositivos y vuelve a intentarlo.",
+                        untilActive, TimeSpan.Zero,
                         TimeSpan.Zero, TimeSpan.Zero, null);
                 }
                 catch
@@ -191,13 +195,21 @@ internal sealed class WindowsAudioEndpointService
             return preferred;
         }
 
-        return enumerator.EnumerateAudioEndPoints(
+        var candidates = enumerator.EnumerateAudioEndPoints(
                 DataFlow.Render,
                 activeOnly ? DeviceState.Active : DeviceState.Active | DeviceState.Unplugged)
             .Where(IsAirPodsStereoEndpoint)
             .OrderByDescending(device => device.State == DeviceState.Active)
             .ThenByDescending(device => NameMatches(SafeName(device), preferredDeviceName))
-            .FirstOrDefault();
+            .ToArray();
+
+        var selected = candidates.FirstOrDefault();
+        foreach (var candidate in candidates)
+        {
+            if (!ReferenceEquals(candidate, selected)) candidate.Dispose();
+        }
+
+        return selected;
     }
 
     private static string SafeName(MMDevice device)

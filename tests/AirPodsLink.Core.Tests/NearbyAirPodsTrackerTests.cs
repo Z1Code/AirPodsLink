@@ -37,6 +37,16 @@ public sealed class NearbyAirPodsTrackerTests
     }
 
     [Fact]
+    public void SwitchesWhenLockedAdvertiserGoesQuietForAddressRotation()
+    {
+        var tracker = new NearbyAirPodsTracker();
+        tracker.TryAccept(1, -50, Start);
+
+        Assert.False(tracker.TryAccept(2, -52, Start.AddSeconds(1)));
+        Assert.True(tracker.TryAccept(2, -52, Start.AddSeconds(3)));
+    }
+
+    [Fact]
     public void ReleasesTheLockOnceTheDeviceStopsAdvertising()
     {
         var tracker = new NearbyAirPodsTracker(staleAfter: TimeSpan.FromSeconds(30));
