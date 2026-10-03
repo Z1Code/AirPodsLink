@@ -74,6 +74,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _batteryIcon = new BatteryTrayIcon(_trayIcon);
         _batteryIcon.Update(null, false, BatteryFreshness.Unknown);
         _staleTimer.Tick += (_, _) => DropStaleReading();
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         _staleTimer.Start();
         _watcher.AirPodsSeen += OnAirPodsSeen;
         _watcher.AppleProximityObserved += OnAppleProximityObserved;
@@ -209,6 +210,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    /// <summary>
+    /// Redraws the icon when the taskbar switches between light and dark, so the
+    /// number keeps matching the other notification-area glyphs.
+    /// </summary>
+    private void OnUserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs args)
+    {
+        if (args.Category is Microsoft.Win32.UserPreferenceCategory.General
+            or Microsoft.Win32.UserPreferenceCategory.VisualStyle)
+        {
+            RunOnUi(() => RefreshBattery(_audioReady ? "conectados" : "detectados"));
+        }
+    }
+
     private void DropStaleReading()
     {
         if (_battery.LowestPod is not null && !_battery.IsPodReadingLive(DateTimeOffset.UtcNow))
@@ -307,6 +321,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _staleTimer.Stop();
         _staleTimer.Dispose();
+        // SystemEvents is static: an attached handler would outlive the tray.
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _endpointMonitor.StereoEndpointActivated -= OnStereoEndpointActivated;
         _endpointMonitor.Diagnostic -= OnWatcherDiagnostic;
         _endpointMonitor.Dispose();
