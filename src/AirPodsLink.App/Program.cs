@@ -14,6 +14,13 @@ internal static class Program
                 _ = accelerator.TryConnectAsync(force: true).GetAwaiter().GetResult();
                 return;
             }
+
+            // With "start with Windows" enabled, opening the exe by hand used to
+            // start a second tray app: two icons, two scanners and every
+            // connection routed twice.
+            using var instance = new Mutex(initiallyOwned: true, @"Local\AirPodsLink.Tray", out var isFirst);
+            if (!isFirst) return;
+
             Application.Run(new TrayApplicationContext());
         }
         catch (Exception error)

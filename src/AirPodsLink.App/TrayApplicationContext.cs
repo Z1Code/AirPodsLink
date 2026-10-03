@@ -1,3 +1,5 @@
+using AirPodsLink.Core;
+
 namespace AirPodsLink.App;
 
 internal sealed class TrayApplicationContext : ApplicationContext
@@ -9,6 +11,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly NormalConnectionAccelerator _accelerator;
     private readonly ToolStripMenuItem _accelerationMenuItem;
     private readonly BatteryTrayIcon _batteryIcon;
+    // Mutated only on the UI thread, together with what it feeds.
+    private readonly BatteryTracker _battery = new();
     private readonly System.Windows.Forms.Timer _staleTimer = new() { Interval = 5000 };
     private readonly AirPodsEndpointMonitor _endpointMonitor = new();
     private string? _lastRoutedEndpointId;
@@ -68,7 +72,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
         };
         _batteryIcon = new BatteryTrayIcon(_trayIcon);
-        _batteryIcon.Update(null, false, stale: true);
+        _batteryIcon.Update(null, false, BatteryFreshness.Unknown);
         _staleTimer.Tick += (_, _) => DropStaleReading();
         _staleTimer.Start();
         _watcher.AirPodsSeen += OnAirPodsSeen;
@@ -108,12 +112,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // form nor NotifyIcon may be touched from there.
         RunOnUi(() =>
         {
-            _statusForm.UpdateStatus(seen, connected);
-            _trayIcon.Text = BuildTooltip(seen, connected);
-            _batteryIcon.Update(
-                seen.Advertisement.LowestPodBattery,
-                seen.Advertisement.LeftCharging || seen.Advertisement.RightCharging,
-                stale: false);
+            _battery.Observe(seen.Advertisement, DateTimeOffset.UtcNow);
+            _statusForm.UpdateStatus(seen, _battery, connected);
+            RefreshBattery(connected ? "conectados" : "detectados");
 
             if (lidChanged && DateTimeOffset.UtcNow - _lastNotification > TimeSpan.FromSeconds(8))
             {
@@ -121,7 +122,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _trayIcon.ShowBalloonTip(
                     3500,
                     seen.Advertisement.ModelName,
-                    $"I: {Format(seen.Advertisement.LeftBattery)} · D: {Format(seen.Advertisement.RightBattery)} · Estuche: {Format(seen.Advertisement.CaseBattery)}",
+                    $"I: {Format(_battery.Left)} · D: {Format(_battery.Right)} · Estuche: {Format(_battery.Case)}",
                     ToolTipIcon.Info);
             }
         });
@@ -210,6 +211,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void DropStaleReading()
     {
+        if (_battery.LowestPod is not null && !_battery.IsPodReadingLive(DateTimeOffset.UtcNow))
+        {
+            // Worn pods keep advertising without a charge; age the figure anyway.
+            RefreshBattery(_audioReady ? "conectados" : "detectados");
+        }
+
         var lastSeenTicks = Interlocked.Read(ref _lastSeenTicks);
         if (lastSeenTicks == DateTimeOffset.MinValue.UtcTicks ||
             DateTimeOffset.UtcNow - new DateTimeOffset(lastSeenTicks, TimeSpan.Zero) < _watcher.StaleAfter)
@@ -218,8 +225,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         Interlocked.Exchange(ref _lastSeenTicks, DateTimeOffset.MinValue.UtcTicks);
-        _batteryIcon.Update(null, false, stale: true);
-        _trayIcon.Text = "AirPodsLink · buscando AirPods";
+        // Keep the last known charge on screen, greyed, instead of wiping it:
+        // "80, an hour ago" is more useful than "--".
+        RefreshBattery("buscando AirPods");
+    }
+
+    /// <summary>Repaints the icon and tooltip from the accumulated readings.</summary>
+    private void RefreshBattery(string state)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var freshness = _battery.LowestPod is null ? BatteryFreshness.Unknown
+            : _battery.IsPodReadingLive(now) ? BatteryFreshness.Live
+            : BatteryFreshness.Remembered;
+        _batteryIcon.Update(_battery.LowestPod, _battery.PodCharging, freshness);
+
+        var pods = $"I {Format(_battery.Left)} D {Format(_battery.Right)}";
+        if (freshness == BatteryFreshness.Remembered && _battery.LowestPodReading is { } lowest)
+            pods += $" (hace {StatusForm.FormatAge(lowest.Age(now))})";
+        var text = $"AirPodsLink · {state} · {pods}";
+        _trayIcon.Text = text.Length <= 127 ? text : text[..127];
     }
 
     private void RunOnUi(Action action)
@@ -249,13 +273,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void OnWatcherDiagnostic(object? sender, string message) =>
         _ = _log.WriteAsync("ble-scanner", new { message });
 
-    private static string BuildTooltip(AirPodsSeenEventArgs seen, bool connected)
-    {
-        var text = $"AirPodsLink · {(connected ? "conectados" : "detectados")} · I {Format(seen.Advertisement.LeftBattery)} D {Format(seen.Advertisement.RightBattery)}";
-        return text.Length <= 127 ? text : text[..127];
-    }
-
-    private static string Format(int? value) => value is null ? "—" : $"{value}%";
+    private static string Format(BatteryReading? reading) =>
+        reading is { } value ? $"{BatteryTracker.FormatPercent(value.Percent)} %" : "—";
 
     private void ShowStatus()
     {

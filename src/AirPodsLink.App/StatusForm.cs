@@ -65,18 +65,31 @@ internal sealed class StatusForm : Form
                 : "Detectados cerca · Windows aún está conectando";
     }
 
-    public void UpdateStatus(AirPodsSeenEventArgs seen, bool windowsConnected)
+    public void UpdateStatus(AirPodsSeenEventArgs seen, BatteryTracker battery, bool windowsConnected)
     {
         var item = seen.Advertisement;
+        var now = DateTimeOffset.UtcNow;
         _model.Text = item.ModelName;
         _connection.Text = windowsConnected ? "Conectados a Windows" : "Detectados cerca · preparando conexión";
-        _left.Text = $"Izquierdo: {FormatBattery(item.LeftBattery, item.LeftCharging)}";
-        _right.Text = $"Derecho: {FormatBattery(item.RightBattery, item.RightCharging)}";
-        _case.Text = $"Estuche: {FormatBattery(item.CaseBattery, item.CaseCharging)}";
+        _left.Text = $"Izquierdo: {FormatBattery(battery.Left, now)}";
+        _right.Text = $"Derecho: {FormatBattery(battery.Right, now)}";
+        _case.Text = $"Estuche: {FormatBattery(battery.Case, now)}";
         _detail.Text = $"Señal {seen.Rssi} dBm · oído: {FormatEar(item)} · recibido {DateTime.Now:T}";
     }
 
-    private static string FormatBattery(int? battery, bool charging) => battery is null ? "—" : $"{battery}%{(charging ? " ⚡" : string.Empty)}";
+    /// <summary>Formats a reading, saying how old it is once it stops being live.</summary>
+    internal static string FormatBattery(BatteryReading? reading, DateTimeOffset now)
+    {
+        if (reading is not { } value) return "—";
+        var age = value.Age(now);
+        if (age < BatteryTracker.LiveFor)
+            return $"{BatteryTracker.FormatPercent(value.Percent)} %{(value.Charging ? " ⚡" : string.Empty)}";
+        return $"{BatteryTracker.FormatPercent(value.Percent)} % (hace {FormatAge(age)})";
+    }
+
+    internal static string FormatAge(TimeSpan age) => age.TotalHours >= 1
+        ? $"{(int)age.TotalHours} h {age.Minutes} min"
+        : $"{Math.Max(1, (int)age.TotalMinutes)} min";
 
     private static string FormatEar(AirPodsAdvertisement item) => (item.LeftInEar, item.RightInEar) switch
     {

@@ -35,7 +35,10 @@ una conexión inmediata sin instalar controladores.
   activación.
 - Incluye **Conectar ahora**, un interruptor de aceleración y un registro local.
 
-La batería BLE normalmente se publica en pasos de 10 %. El estuche suele anunciarse
+La batería BLE se publica en pasos de 10 %: `70` significa 70-79 %, y `<10` significa
+menos del 10 % —no vacío; un auricular que lo reporta puede seguir sonando—. Un valor en
+gris es la última lectura conocida, no la actual (por ejemplo, el estuche cerrado o un
+auricular apagado); la ventana de estado indica su antigüedad. El estuche suele anunciarse
 sólo cuando está abierto y al menos un auricular está dentro.
 
 ## Requisitos

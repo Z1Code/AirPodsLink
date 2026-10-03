@@ -1,9 +1,26 @@
+using AirPodsLink.Core;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
 
 namespace AirPodsLink.App;
+
+/// <summary>How much the shown charge can be trusted.</summary>
+internal enum BatteryFreshness
+{
+    /// <summary>No believable reading yet: drawn as a grey "--".</summary>
+    Unknown,
+
+    /// <summary>Confirmed moments ago: drawn in the level colour.</summary>
+    Live,
+
+    /// <summary>
+    /// Last confirmed value, no longer current (worn pods withhold their charge,
+    /// or the AirPods went quiet): drawn in grey so it is not read as live.
+    /// </summary>
+    Remembered
+}
 
 /// <summary>
 /// Draws the taskbar icon that shows the lowest earbud charge.
@@ -17,14 +34,15 @@ internal sealed class BatteryTrayIcon : IDisposable
     private static readonly Color ChargingColor = Color.FromArgb(96, 208, 255);
 
     private readonly NotifyIcon _target;
-    private (int? Percent, bool Charging, bool Stale)? _rendered;
+    private (int? Percent, bool Charging, BatteryFreshness Freshness)? _rendered;
     private Icon? _owned;
 
     public BatteryTrayIcon(NotifyIcon target) => _target = target;
 
-    public void Update(int? percent, bool charging, bool stale)
+    public void Update(int? percent, bool charging, BatteryFreshness freshness)
     {
-        var next = (percent, charging, stale);
+        if (percent is null) freshness = BatteryFreshness.Unknown;
+        var next = (percent, charging, freshness);
         if (_rendered == next)
         {
             return;
@@ -32,12 +50,12 @@ internal sealed class BatteryTrayIcon : IDisposable
 
         _rendered = next;
         var previous = _owned;
-        _owned = Render(percent, charging, stale);
+        _owned = Render(percent, charging, freshness);
         _target.Icon = _owned;
         previous?.Dispose();
     }
 
-    private static Icon Render(int? percent, bool charging, bool stale)
+    private static Icon Render(int? percent, bool charging, BatteryFreshness freshness)
     {
         var size = Math.Max(SystemInformation.SmallIconSize.Width, 16);
         using var bitmap = new Bitmap(size, size, PixelFormat.Format32bppArgb);
@@ -46,12 +64,13 @@ internal sealed class BatteryTrayIcon : IDisposable
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             graphics.TextRenderingHint = TextRenderingHint.AntiAlias;
 
-            var known = percent is not null && !stale;
-            var showCharging = charging && known;
+            var live = freshness == BatteryFreshness.Live;
+            // A remembered charging flag says nothing about now.
+            var showCharging = charging && live;
             DrawFitted(
                 graphics,
-                known ? $"{percent!.Value}" : "--",
-                known ? LevelColor(percent!.Value) : UnknownColor,
+                percent is { } shown ? BatteryTracker.FormatPercent(shown) : "--",
+                live ? LevelColor(percent!.Value) : UnknownColor,
                 size,
                 showCharging);
 

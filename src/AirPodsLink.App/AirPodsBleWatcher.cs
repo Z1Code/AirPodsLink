@@ -13,6 +13,7 @@ internal sealed class AirPodsBleWatcher : IDisposable
     private bool _started;
     private int _restartPending;
     private DateTimeOffset _lastRawDiagnostic = DateTimeOffset.MinValue;
+    private int _lastLoggedState = -1;
 
     public event EventHandler<AirPodsSeenEventArgs>? AirPodsSeen;
     public event EventHandler? AppleProximityObserved;
@@ -82,17 +83,32 @@ internal sealed class AirPodsBleWatcher : IDisposable
             }
 
             AppleProximityObserved?.Invoke(this, EventArgs.Empty);
-            if (now - _lastRawDiagnostic > TimeSpan.FromSeconds(5))
-            {
-                _lastRawDiagnostic = now;
-                Diagnostic?.Invoke(this, $"Apple proximity packet: {bytes.Length} bytes, RSSI {args.RawSignalStrengthInDBm} dBm.");
-            }
+            LogProximityState(bytes, offset, args.RawSignalStrengthInDBm, now);
 
             if (AppleProximityParser.TryParse(bytes, out var advertisement) && advertisement is not null)
             {
                 AirPodsSeen?.Invoke(this, new AirPodsSeenEventArgs(args.BluetoothAddress, args.RawSignalStrengthInDBm, advertisement));
             }
         }
+    }
+
+    /// <summary>
+    /// Records the status, battery and charge bytes whenever they change, plus a
+    /// heartbeat each minute. Logging only "packet received" every few seconds
+    /// made the log grow ~0.7 MB a day while leaving out exactly the bytes
+    /// needed to explain a wrong battery reading.
+    /// </summary>
+    private void LogProximityState(byte[] bytes, int offset, short rssi, DateTimeOffset now)
+    {
+        if (bytes.Length < offset + 8) return;
+        var state = (bytes[offset + 5] << 16) | (bytes[offset + 6] << 8) | bytes[offset + 7];
+        if (state == _lastLoggedState && now - _lastRawDiagnostic < TimeSpan.FromMinutes(1)) return;
+
+        _lastLoggedState = state;
+        _lastRawDiagnostic = now;
+        Diagnostic?.Invoke(this,
+            $"Apple proximity: estado 0x{bytes[offset + 5]:X2} batería 0x{bytes[offset + 6]:X2} " +
+            $"carga 0x{bytes[offset + 7]:X2}, RSSI {rssi} dBm.");
     }
 
     private async void OnStopped(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementWatcherStoppedEventArgs args)

@@ -34,33 +34,36 @@ public static class AppleProximityParser
             return false;
         }
 
-        var declaredPayloadLength = data[1];
-        if (declaredPayloadLength > 0 && data.Length < Math.Min(declaredPayloadLength + 2, 11))
-        {
-            return false;
-        }
-
         var modelId = (ushort)((data[3] << 8) | data[4]);
         var status = data[5];
-        var primaryPodIsLeft = (status & 0x20) != 0;
-        var firstBattery = DecodeBattery(data[6] >> 4);
-        var secondBattery = DecodeBattery(data[6] & 0x0F);
 
-        // Apple changes the physical primary pod. Bit 5 indicates whether the
-        // first battery nibble belongs to the left or right component.
-        var leftBattery = primaryPodIsLeft ? firstBattery : secondBattery;
-        var rightBattery = primaryPodIsLeft ? secondBattery : firstBattery;
+        // Each pod owns one battery nibble, one charging bit and one in-ear
+        // bit; status bit 0x20 says which pod is which. When it is set the left
+        // pod owns the low nibble, charging bit 0 and in-ear bit 0x02, matching
+        // the OpenPods reference decoder. This mapping used to be mirrored:
+        // with the left pod discharged and the right one playing, real AirPods
+        // Pro 2 sent "07190114 2002F08F" for minutes, and the mirrored decode
+        // reported the dead left pod in the ear and the playing right pod out.
+        var lowIsLeft = (status & 0x20) != 0;
+        var highBattery = DecodeBattery(data[6] >> 4);
+        var lowBattery = DecodeBattery(data[6] & 0x0F);
+        var leftBattery = lowIsLeft ? lowBattery : highBattery;
+        var rightBattery = lowIsLeft ? highBattery : lowBattery;
 
         var chargeFlags = data[7] >> 4;
         var caseBattery = DecodeBattery(data[7] & 0x0F);
-        var leftCharging = primaryPodIsLeft ? (chargeFlags & 0b0010) != 0 : (chargeFlags & 0b0001) != 0;
-        var rightCharging = primaryPodIsLeft ? (chargeFlags & 0b0001) != 0 : (chargeFlags & 0b0010) != 0;
+        var lowCharging = (chargeFlags & 0b0001) != 0;
+        var highCharging = (chargeFlags & 0b0010) != 0;
+        var leftCharging = lowIsLeft ? lowCharging : highCharging;
+        var rightCharging = lowIsLeft ? highCharging : lowCharging;
 
-        // These fields are intentionally exposed conservatively. Firmware can
-        // reuse reserved combinations, but these masks are stable across the
-        // public Continuity protocol implementations used as references.
-        var leftInEar = (status & 0b0000_1000) != 0;
-        var rightInEar = (status & 0b0000_0011) != 0;
+        // Bit 0x01 is not an in-ear flag. Treating it as one reported a pod in
+        // the ear while both sat in the case, in every in-case capture (status
+        // 0x35 and 0x55).
+        var lowInEar = (status & 0b0000_0010) != 0;
+        var highInEar = (status & 0b0000_1000) != 0;
+        var leftInEar = lowIsLeft ? lowInEar : highInEar;
+        var rightInEar = lowIsLeft ? highInEar : lowInEar;
         var bothInCase = (status & 0b0000_0100) != 0;
         var oneInCase = (status & 0b0001_0000) != 0;
 
@@ -68,7 +71,6 @@ public static class AppleProximityParser
             modelId,
             Models.GetValueOrDefault(modelId, $"AirPods/Beats 0x{modelId:X4}"),
             data[2] == 0x01,
-            primaryPodIsLeft,
             leftBattery,
             rightBattery,
             caseBattery,
@@ -85,5 +87,10 @@ public static class AppleProximityParser
         return true;
     }
 
+    /// <summary>
+    /// Nibbles carry tenths of charge: 0x7 means 70-79 %, and 0x0 means under
+    /// 10 % — not empty, a pod reporting it can still be playing. 0xF and the
+    /// other values above 0xA mean "not reported".
+    /// </summary>
     private static int? DecodeBattery(int nibble) => nibble is >= 0 and <= 10 ? nibble * 10 : null;
 }
