@@ -78,13 +78,9 @@ internal sealed class BatteryTrayIcon : IDisposable
                 : palette.Normal;
 
             var text = percent is { } shown ? BatteryTracker.FormatPercent(shown) : "--";
-            var textBox = new RectangleF(0, 0, showCharging ? size * 0.75f : size, size);
-            DrawFitted(graphics, text, ink, textBox);
-
-            if (showCharging)
-            {
-                DrawBolt(graphics, size * 0.875f, size / 2f, size * 0.42f, palette.Normal);
-            }
+            var body = DrawBatteryBody(graphics, size, percent, live, ink);
+            DrawFitted(graphics, text, ink, body);
+            if (showCharging) DrawBolt(graphics, body, ink);
         }
 
         return CreateIcon(bitmap);
@@ -99,11 +95,13 @@ internal sealed class BatteryTrayIcon : IDisposable
             FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip
         };
         using var brush = new SolidBrush(color);
-        for (var emSize = box.Height * 0.625f; emSize >= 5; emSize -= 0.5f)
+        for (var emSize = box.Height * 1.15f; emSize >= 5; emSize -= 0.5f)
         {
-            using var font = new Font(FontFamilyName.Value, emSize, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var font = new Font(FontFamilyName.Value, emSize, FontStyle.Regular, GraphicsUnit.Pixel);
             var measured = graphics.MeasureString(text, font, PointF.Empty, format);
-            if (measured.Width > box.Width - 1 || measured.Height > box.Height)
+            // MeasureString reports the full line height (ascent plus descent); digits
+            // only use the upper part, so allow the line to overshoot the box.
+            if (measured.Width > box.Width - 1 || measured.Height > box.Height * 1.3f)
             {
                 continue;
             }
@@ -113,24 +111,78 @@ internal sealed class BatteryTrayIcon : IDisposable
         }
     }
 
-    private static void DrawBolt(Graphics graphics, float centerX, float centerY, float height, Color color)
+    /// <summary>
+    /// Outline of a horizontal battery with a faint fill showing the level. The
+    /// figure is drawn inside it, so one glyph carries both the symbol and the
+    /// number. Returns the inner area available for the text.
+    /// </summary>
+    private static RectangleF DrawBatteryBody(Graphics graphics, int size, int? percent, bool live, Color ink)
     {
-        var u = height / 10f;
+        var stroke = Math.Max(1f, size / 16f);
+        var nubWidth = Math.Max(1.5f, size / 16f);
+        var width = size - nubWidth - stroke;
+        var height = size * 0.70f;
+        var body = new RectangleF(stroke / 2, (size - height) / 2, width, height);
+        var radius = size / 7f;
+
+        using var path = RoundedRectangle(body, radius);
+        if (percent is { } level)
+        {
+            var fillWidth = Math.Max(0f, (body.Width - stroke) * Math.Clamp(level, 0, 100) / 100f);
+            using var fill = new SolidBrush(Color.FromArgb(live ? 70 : 45, ink));
+            var state = graphics.Save();
+            graphics.SetClip(path);
+            graphics.FillRectangle(fill, body.X + stroke / 2, body.Y, fillWidth, body.Height);
+            graphics.Restore(state);
+        }
+
+        using var pen = new Pen(ink, stroke);
+        graphics.DrawPath(pen, path);
+        using var nub = new SolidBrush(ink);
+        graphics.FillRectangle(nub, body.Right + stroke / 2, size / 2f - height * 0.2f, nubWidth, height * 0.4f);
+        return RectangleF.Inflate(body, -stroke, -stroke / 2);
+    }
+
+    private static System.Drawing.Drawing2D.GraphicsPath RoundedRectangle(RectangleF area, float radius)
+    {
+        var d = radius * 2;
+        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        path.AddArc(area.X, area.Y, d, d, 180, 90);
+        path.AddArc(area.Right - d, area.Y, d, d, 270, 90);
+        path.AddArc(area.Right - d, area.Bottom - d, d, d, 0, 90);
+        path.AddArc(area.X, area.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    /// <summary>
+    /// Lightning bolt over the battery's top-right corner, with a transparent
+    /// halo so it stays legible against the figure.
+    /// </summary>
+    private static void DrawBolt(Graphics graphics, RectangleF body, Color ink)
+    {
+        var u = body.Height / 11f;
+        var cx = body.Right - 1.2f * u;
+        var cy = body.Top + 0.5f * u;
         PointF[] bolt =
         [
-            new(centerX + 1 * u, centerY - 5 * u), new(centerX - 3 * u, centerY + 0.6f * u),
-            new(centerX - 0.2f * u, centerY + 0.6f * u), new(centerX - 1 * u, centerY + 5 * u),
-            new(centerX + 3 * u, centerY - 0.6f * u), new(centerX + 0.2f * u, centerY - 0.6f * u)
+            new(cx + 1 * u, cy - 5 * u), new(cx - 3 * u, cy + 0.6f * u), new(cx - 0.2f * u, cy + 0.6f * u),
+            new(cx - 1 * u, cy + 5 * u), new(cx + 3 * u, cy - 0.6f * u), new(cx + 0.2f * u, cy - 0.6f * u)
         ];
-        using var brush = new SolidBrush(color);
+        var mode = graphics.CompositingMode;
+        graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+        using (var halo = new Pen(Color.Transparent, u * 1.6f) { LineJoin = System.Drawing.Drawing2D.LineJoin.Round })
+            graphics.DrawPolygon(halo, bolt);
+        graphics.CompositingMode = mode;
+        using var brush = new SolidBrush(ink);
         graphics.FillPolygon(brush, bolt);
     }
 
-    /// <summary>Windows 11's own UI face, falling back on older systems.</summary>
+    /// <summary>Windows 11's own UI face at its small optical size, falling back on older systems.</summary>
     private static readonly Lazy<string> FontFamilyName = new(() =>
-        new InstalledFontCollection().Families.Any(family => family.Name == "Segoe UI Variable Text")
-            ? "Segoe UI Variable Text"
-            : "Segoe UI");
+        new InstalledFontCollection().Families.Select(family => family.Name)
+            .FirstOrDefault(name => name is "Segoe UI Variable Small" or "Segoe UI Variable Text")
+            ?? "Segoe UI");
 
     private static bool TaskbarIsLight()
     {
